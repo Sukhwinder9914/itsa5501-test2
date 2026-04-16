@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: exam-system
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 45s
+      evaluation_interval: 45s
+
+    rule_files:
+      - /etc/prometheus/custom_alert_rules.yml
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - alertmanager:9093
+
+    scrape_configs:
+      - job_name: 'node-performance-monitor'
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['node-exporter:9100']
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: 'node_cpu_seconds_total|node_memory_MemTotal_bytes|node_memory_MemAvailable_bytes|node_load1|node_load5|node_load15'
+            action: keep
+
+      - job_name: 'prometheus-self-monitoring'
+        static_configs:
+          - targets: ['localhost:9090']
+
+  custom_alert_rules.yml: |
+    groups:
+      - name: custom-alert-rules
+        rules:
+          - alert: LowCPUUtilization
+            expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[1m])) * 100)) < 50
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Low CPU utilization detected"
+              description: "CPU utilization has remained below 50% for more than 1 minute."
+
+          - alert: LowMemoryUsage
+            expr: ((node_memory_MemTotal_bytes - (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)) / node_memory_MemTotal_bytes) * 100 < 50
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Low memory usage detected"
+              description: "Used memory is less than 50% of total memory for more than 2 minutes."
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: exam-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+          ports:
+            - containerPort: 9090
+          volumeMounts:
+            - name: prometheus-config-volume
+              mountPath: /etc/prometheus
+      volumes:
+        - name: prometheus-config-volume
+          configMap:
+            name: prometheus-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: exam-system
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+  type: NodePort
